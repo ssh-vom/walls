@@ -10,7 +10,7 @@ from urllib.parse import urlparse
 
 import requests
 from dotenv import load_dotenv
-from textual import work
+from textual import events, work
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical
 from textual.widgets import Footer, Header, Input, Label, ListItem, ListView, Static
@@ -191,12 +191,30 @@ class WallsApp(App):
         padding: 0 1;
         color: $text-muted;
     }
+
+    #cache-content {
+        height: 1fr;
+        layout: vertical;
+    }
+
+    #cache-preview {
+        height: 1fr;
+        border: round $border;
+    }
+
+    #cache-info {
+        height: 8;
+        border: round $border;
+        padding: 1;
+        margin-top: 1;
+    }
     """
 
     BINDINGS = [
         ("q", "quit", "Quit"),
-        ("right", "next_page", "Next page"),
-        ("left", "previous_page", "Previous page"),
+        ("right", "next_page_or_cache", "Next"),
+        ("left", "previous_page_or_cache", "Previous"),
+        ("c", "toggle_cache_mode", "Cache mode"),
         ("x", "nsfw_filter", "NSFW_FILTER"),
     ]
 
@@ -211,6 +229,9 @@ class WallsApp(App):
         self.last_page = 1
         self.purity = 100  # default sfw
         self.results: list[Wallpaper] = []
+        self.cache_mode = False
+        self.cached_wallpapers: list[Wallpaper] = []
+        self.current_cache_index = 0
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -221,11 +242,15 @@ class WallsApp(App):
                 with Vertical(id="preview-pane"):
                     yield Image(id="preview-text")
                     yield Static("", id="details")
+            with Vertical(id="cache-content"):
+                yield Image(id="cache-preview")
+                yield Static("", id="cache-info")
             yield Static("", id="status")
         yield Footer()
 
     def on_mount(self) -> None:
         self.query_one("#query", Input).focus()
+        self.query_one("#cache-content").display = False
         message = "Enter a search term and press Enter."
         if not self.client.api_key:
             message += " No API key detected; NSFW results unavailable."
@@ -241,6 +266,18 @@ class WallsApp(App):
         else:
             image_widget.image = None
         self.query_one("#details", Static).update(details)
+
+    def action_next_page_or_cache(self) -> None:
+        if self.cache_mode:
+            self.action_next_cache_item()
+        else:
+            self.action_next_page()
+
+    def action_previous_page_or_cache(self) -> None:
+        if self.cache_mode:
+            self.action_previous_cache_item()
+        else:
+            self.action_previous_page()
 
     def action_next_page(self) -> None:
         if not self.search_query:
@@ -262,10 +299,98 @@ class WallsApp(App):
         self.current_page -= 1
         self.start_search()
 
+    def action_next_cache_item(self) -> None:
+        if not self.cached_wallpapers:
+            return
+        if self.current_cache_index < len(self.cached_wallpapers) - 1:
+            self.current_cache_index += 1
+            self.update_cache_view()
+        else:
+            self.update_status("At last cached wallpaper.")
+
+    def action_previous_cache_item(self) -> None:
+        if not self.cached_wallpapers:
+            return
+        if self.current_cache_index > 0:
+            self.current_cache_index -= 1
+            self.update_cache_view()
+        else:
+            self.update_status("At first cached wallpaper.")
+
     def action_purity(self) -> None:
         from constants import purity_state_mapping as next_state
 
         self.purity = next_state[self.purity]
+
+    def action_toggle_cache_mode(self) -> None:
+        self.cache_mode = not self.cache_mode
+        content_view = self.query_one("#content")
+        cache_view = self.query_one("#cache-content")
+        input_field = self.query_one("#query", Input)
+
+        if self.cache_mode:
+            content_view.display = False
+            cache_view.display = True
+            input_field.display = False
+            self.load_cached_wallpapers()
+        else:
+            content_view.display = True
+            cache_view.display = False
+            input_field.display = True
+            self.update_status("Switched to search mode.")
+
+    def load_cached_wallpapers(self) -> None:
+        self.update_status("Loading cached wallpapers...")
+        self.list_cached_wallpapers()
+
+    def list_cached_wallpapers(self) -> None:
+        if not FULL_DIR.exists():
+            self.update_status("No cached wallpapers found.")
+            return
+
+        cached_files = list(FULL_DIR.iterdir())
+        if not cached_files:
+            self.update_status("No cached wallpapers found.")
+            return
+
+        self.cached_wallpapers = []
+        for file_path in sorted(
+            cached_files, key=lambda p: p.stat().st_mtime, reverse=True
+        ):
+            identifier = file_path.stem
+            cached_wallpaper = Wallpaper(
+                identifier=identifier,
+                thumb_url=str(file_path),
+                full_url=str(file_path),
+                resolution="",
+                category="cached",
+                purity="sfw",
+                file_type=file_path.suffix,
+            )
+            self.cached_wallpapers.append(cached_wallpaper)
+
+        if self.cached_wallpapers:
+            self.current_cache_index = 0
+            self.update_cache_view()
+            self.update_status(
+                f"Loaded {len(self.cached_wallpapers)} cached wallpapers. "
+                f"Use left/right arrows to navigate, Enter to set wallpaper."
+            )
+        else:
+            self.update_status("No cached wallpapers found.")
+
+    def update_cache_view(self) -> None:
+        if not self.cached_wallpapers:
+            self.query_one("#cache-preview", Image).image = None
+            self.query_one("#cache-info", Static).update("")
+            return
+
+        wallpaper = self.cached_wallpapers[self.current_cache_index]
+        self.query_one("#cache-preview", Image).image = wallpaper.full_url
+
+        details = format_details(wallpaper)
+        info = f"{details}\n\n[{self.current_cache_index + 1}/{len(self.cached_wallpapers)}]"
+        self.query_one("#cache-info", Static).update(info)
 
     def on_input_submitted(self, message: Input.Submitted) -> None:
         query = message.value.strip()
@@ -276,6 +401,12 @@ class WallsApp(App):
         self.current_page = 1
         self.start_search()
 
+    def on_key(self, event: events.Key) -> None:
+        if self.cache_mode and event.key == "enter":
+            if self.cached_wallpapers:
+                wallpaper = self.cached_wallpapers[self.current_cache_index]
+                self.set_cached_wallpaper(wallpaper)
+
     def on_list_view_highlighted(self, message: ListView.Highlighted) -> None:
         if not message.item or not isinstance(message.item, WallItem):
             self.update_preview(None, "")
@@ -285,7 +416,10 @@ class WallsApp(App):
 
     def on_list_view_selected(self, message: ListView.Selected) -> None:
         if isinstance(message.item, WallItem):
-            self.set_wallpaper(message.item.wallpaper)
+            if self.cache_mode:
+                self.set_cached_wallpaper(message.item.wallpaper)
+            else:
+                self.set_wallpaper(message.item.wallpaper)
 
     def start_search(self) -> None:
         self.update_status(
@@ -341,8 +475,17 @@ class WallsApp(App):
             return
 
         try:
-            thumbnail_path = self.cache.thumbnail_path(wallpaper)
-            cached_thumbnail = self.cache.download(wallpaper.thumb_url, thumbnail_path)
+            if self.cache_mode:
+                preview_path = Path(wallpaper.full_url)
+                if preview_path.exists():
+                    cached_thumbnail = preview_path
+                else:
+                    cached_thumbnail = None
+            else:
+                thumbnail_path = self.cache.thumbnail_path(wallpaper)
+                cached_thumbnail = self.cache.download(
+                    wallpaper.thumb_url, thumbnail_path
+                )
             details = format_details(wallpaper)
         except WallhavenError as exc:
             cached_thumbnail = None
@@ -368,6 +511,28 @@ class WallsApp(App):
 
         self.call_from_thread(
             self.update_status, f"Wallpaper set to {wallpaper.identifier}."
+        )
+
+    @work(thread=True, exclusive=True, group="wallpaper")
+    def set_cached_wallpaper(self, wallpaper: Wallpaper) -> None:
+        self.call_from_thread(
+            self.update_status,
+            f"Setting wallpaper from cache: {wallpaper.identifier}...",
+        )
+        try:
+            full_path = Path(wallpaper.full_url)
+            if not full_path.exists():
+                raise WallhavenError(f"Cached file not found: {full_path}")
+            self._set_macos_wallpaper(full_path)
+        except WallhavenError as exc:
+            self.call_from_thread(self.show_error, str(exc))
+            return
+        except Exception as exc:
+            self.call_from_thread(self.show_error, f"Wallpaper set failed: {exc}")
+            return
+
+        self.call_from_thread(
+            self.update_status, f"Wallpaper set to {wallpaper.identifier} (from cache)."
         )
 
     @staticmethod
