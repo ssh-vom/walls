@@ -10,12 +10,12 @@ from urllib.parse import urlparse
 
 import requests
 from dotenv import load_dotenv
-from PIL import Image as PILImage
 from textual import work
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical
 from textual.widgets import Footer, Header, Input, Label, ListItem, ListView, Static
 from textual_image.widget import Image
+
 
 BASE_URL = "https://wallhaven.cc/api/v1"
 CACHE_ROOT = Path.home() / ".cache" / "walls"
@@ -47,9 +47,12 @@ class WallhavenClient:
             self.session.headers.update({"X-API-Key": api_key})
 
     def search(
-        self, query: str, page: int = 1
+        self,
+        query: str,
+        purity: int,
+        page: int = 1,
     ) -> tuple[list[Wallpaper], dict[str, Any]]:
-        params = {"q": query, "page": page}
+        params = {"q": query, "page": page, "purity": purity}
         try:
             response = self.session.get(f"{BASE_URL}/search", params=params, timeout=15)
         except requests.RequestException as exc:
@@ -117,30 +120,6 @@ class CacheManager:
                 destination.unlink(missing_ok=True)
             raise WallhavenError(f"Download failed: {exc}") from exc
         return destination
-
-
-def render_ascii_thumbnail(path: Path, width: int, height: int) -> str:
-    target_width = max(10, width)
-    target_height = max(6, height)
-    with PILImage.open(path) as image:
-        grayscale = image.convert("L")
-        if grayscale.width == 0 or grayscale.height == 0:
-            return "(No preview available)"
-        aspect_ratio = grayscale.height / grayscale.width
-        scaled_height = max(1, int(aspect_ratio * target_width * 0.55))
-        scaled_height = min(scaled_height, target_height)
-        resized = grayscale.resize(
-            (target_width, scaled_height), resample=PILImage.Resampling.LANCZOS
-        )
-        pixels = list(resized.getdata())
-
-    scale = len(ASCII_GRADIENT) - 1
-    lines = []
-    for row_start in range(0, len(pixels), target_width):
-        row = pixels[row_start : row_start + target_width]
-        line = "".join(ASCII_GRADIENT[pixel * scale // 255] for pixel in row)
-        lines.append(line)
-    return "\n".join(lines)
 
 
 def format_details(wallpaper: Wallpaper) -> str:
@@ -216,8 +195,9 @@ class WallsApp(App):
 
     BINDINGS = [
         ("q", "quit", "Quit"),
-        ("n", "next_page", "Next page"),
-        ("p", "previous_page", "Previous page"),
+        ("right", "next_page", "Next page"),
+        ("left", "previous_page", "Previous page"),
+        ("x", "nsfw_filter", "NSFW_FILTER"),
     ]
 
     TITLE = "Walls"
@@ -229,6 +209,7 @@ class WallsApp(App):
         self.search_query = ""
         self.current_page = 1
         self.last_page = 1
+        self.purity = 100  # default sfw
         self.results: list[Wallpaper] = []
 
     def compose(self) -> ComposeResult:
@@ -280,6 +261,11 @@ class WallsApp(App):
             return
         self.current_page -= 1
         self.start_search()
+
+    def action_purity(self) -> None:
+        from constants import purity_state_mapping as next_state
+
+        self.purity = next_state[self.purity]
 
     def on_input_submitted(self, message: Input.Submitted) -> None:
         query = message.value.strip()
@@ -338,7 +324,7 @@ class WallsApp(App):
     @work(thread=True, exclusive=True, group="search")
     def search_wallpapers(self, query: str, page: int) -> None:
         try:
-            results, meta = self.client.search(query, page)
+            results, meta = self.client.search(query, self.purity, page)
         except WallhavenError as exc:
             self.call_from_thread(self.show_error, str(exc))
             return
