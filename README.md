@@ -4,7 +4,7 @@ Textual TUI for searching Wallhaven and setting wallpapers on macOS.
 
 ## Setup
 
-- Create a `.env` file with `WALLHAVEN_API_KEY=...` (optional, required for NSFW).
+- Create a `.env` file with `WALLHAVEN_API_KEY=...`
 - Install dependencies: `uv sync`.
 - Run the app: `uv run python main.py`.
 
