@@ -13,7 +13,7 @@ Textual TUI for searching Wallhaven and setting wallpapers on macOS.
 - Type a search query and press `Enter`.
 - Use `Up` / `Down` to move through results.
 - Press `Enter` on a result to download and set the wallpaper.
-- Use `n` / `p` to move between pages.
+- Use `Left` / `Right` to move between pages.
 - Press `q` to quit.
 
 Cache paths:
